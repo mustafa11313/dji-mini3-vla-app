@@ -14,6 +14,9 @@ import dji.sampleV5.aircraft.recorder.EpisodePlan
 import dji.sampleV5.aircraft.recorder.EpisodeUploader
 import dji.sampleV5.aircraft.util.Helper
 import dji.sampleV5.aircraft.util.ToastUtils
+import dji.sampleV5.aircraft.vla.BridgeClient
+import dji.sampleV5.aircraft.vla.LabSettings
+import dji.sampleV5.aircraft.vla.StickController
 import dji.sampleV5.aircraft.virtualstick.OnScreenJoystick
 import dji.sampleV5.aircraft.virtualstick.OnScreenJoystickListener
 import dji.sdk.keyvalue.value.common.EmptyMsg
@@ -56,13 +59,14 @@ class VirtualStickFragment : DJIFragment() {
         initStickListener()
         virtualStickVM.listenRCStick()
         basicAircraftControlVM.listenForLandingConfirmation()
-        // Update the IP if your laptop's network address changes.
-        basicAircraftControlVM.listenForRecordingAndStartStream("rtmp://172.24.14.216:1935/live") { status ->
+        // The PC address is set in the app: type "pc <ip>" and press Execute Command.
+        basicAircraftControlVM.listenForRecordingAndStartStream(LabSettings.rtmpUrl) { status ->
             ToastUtils.showToast("[Stream] $status")
             android.util.Log.i("LiveStreamHelper", status)
         }
         basicAircraftControlVM.listenForRecordingAndRecordTelemetry()
         initEpisodePanel()
+        initModelPanel()
         virtualStickVM.currentSpeedLevel.observe(viewLifecycleOwner) {
             updateVirtualStickInfo()
         }
@@ -109,6 +113,40 @@ class VirtualStickFragment : DJIFragment() {
                 virtualStickVM.resetReplayFinishedFlag()
             }
         }
+    }
+
+    // ---- model loop: status, MODEL FLY, STOP (see vla/StickController.kt) ----
+    private fun initModelPanel() {
+        StickController.start()
+        StickController.onStatus = { s ->
+            val link = if (s.connected) "link ok" else "no link"
+            val delay = if (s.delayMs >= 0) "${s.delayMs} ms" else "-"
+            val m = s.modelPct
+            val p = s.pilotPct
+            binding?.modelTv?.text = "Model: ${s.mode}${if (s.armed) " FLYING" else ""} | $link | delay $delay\n" +
+                    "model P ${m[0].toInt()} R ${m[1].toInt()} T ${m[2].toInt()} Y ${m[3].toInt()}\n" +
+                    "pilot P ${p[0]} R ${p[1]} T ${p[2]} Y ${p[3]}\n${s.note}"
+        }
+        BridgeClient.onLog = { msg -> mainHandler.post { ToastUtils.showToast("[PC] $msg") } }
+        binding?.btnModelFly?.setOnClickListener {
+            virtualStickVM.stopReplay()      // a running replay must not fight the model
+            StickController.arm { ok, msg -> mainHandler.post { ToastUtils.showToast(if (ok) msg else "MODEL FLY refused. $msg") } }
+        }
+        binding?.btnModelStop?.setOnClickListener { stopEverything() }
+        binding?.btnStopCommand?.setOnClickListener { stopEverything() }
+    }
+
+    /** Stops the model loop and any replay, and hovers. Works whatever is running. */
+    private fun stopEverything() {
+        StickController.emergencyStop()
+        virtualStickVM.stopFromServerCommand()
+        ToastUtils.showToast("STOP: model and replay stopped, hovering")
+    }
+
+    override fun onDestroyView() {
+        StickController.onStatus = null
+        BridgeClient.onLog = null
+        super.onDestroyView()
     }
 
     // ---- recording plan: next setup on screen, SUCCESS / FAIL, upload to the PC ----
@@ -243,7 +281,20 @@ class VirtualStickFragment : DJIFragment() {
         binding?.btnExecuteCommand?.setOnClickListener {
             val command = binding?.commandInput?.text.toString().trim().lowercase()
 
+            if (command.startsWith("pc ")) {
+                LabSettings.pcHost = command.removePrefix("pc ").trim()
+                ToastUtils.showToast("PC address set to ${LabSettings.pcHost} (restart the app for the live stream)")
+                return@setOnClickListener
+            }
             when (command) {
+                "bridge on" -> {
+                    BridgeClient.connect()
+                    ToastUtils.showToast("Connecting to the PC brain at ${LabSettings.bridgeUrl}")
+                }
+                "bridge off" -> {
+                    BridgeClient.disconnect()
+                    ToastUtils.showToast("PC brain disconnected")
+                }
                 "replay" -> {
                     // Sends exactly ONE CSV row per click. Click again to
                     // advance to the next row. Type "reset" first to start
@@ -294,7 +345,8 @@ class VirtualStickFragment : DJIFragment() {
                 "stopreplay" -> {
                     virtualStickVM.stopReplay()
                 }
-                "forward", "backward", "left", "right", "stop" -> {
+                "stop" -> stopEverything()
+                "forward", "backward", "left", "right" -> {
                     virtualStickVM.getCommandFromServer(command)
                 }
                 else -> {
