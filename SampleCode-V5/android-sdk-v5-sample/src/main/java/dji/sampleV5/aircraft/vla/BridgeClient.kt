@@ -12,7 +12,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
-import okio.ByteString
+import okio.ByteString.Companion.toByteString
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -163,7 +163,7 @@ object BridgeClient {
                 .toString().toByteArray()
             val msg = ByteBuffer.allocate(4 + header.size + jpeg.size)
                 .putInt(header.size).put(header).put(jpeg).array()     // big-endian length first
-            ws.send(ByteString.of(msg, 0, msg.size))
+            ws.send(msg.toByteString())
         } catch (e: Exception) {
             // never let one bad frame stop the loop
         }
