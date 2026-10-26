@@ -10,6 +10,8 @@ import dji.v5.et.action
 import dji.v5.et.create
 import dji.v5.manager.KeyManager
 import dji.v5.utils.common.ContextUtil
+import dji.sampleV5.aircraft.vla.Speaker
+import java.io.File
 
 /**
  * ONE recording controller for the whole app process.
@@ -34,6 +36,9 @@ object RecordingController {
     private var landingRegistered = false
     @Volatile private var sawFlying = false
 
+    /** Result of the on-phone episode check (EpisodeCheck), called on a background thread. */
+    @Volatile var onEpisodeChecked: ((File, EpisodeCheck.Result) -> Unit)? = null
+
     @Synchronized
     fun ensureRecording(onStatus: (String) -> Unit = {}) {
         if (recordingRegistered) return
@@ -49,9 +54,11 @@ object RecordingController {
                 telemetry.episodeDir?.let { frames.start(it) }
                 onStatus("Telemetry + frames started: ${telemetry.episodeDir}")
             } else if (isRecording == false) {
+                val wasRecording = EpisodePlan.recording
                 frames.stop()
                 telemetry.stop()
                 onStatus("Telemetry + frames stopped")
+                if (wasRecording) telemetry.episodeDir?.let { dir -> checkLater(dir) }
             }
         }
 
@@ -64,6 +71,15 @@ object RecordingController {
                 CameraKey.KeyStopRecord.create(ComponentIndexType.LEFT_OR_MAIN).action({}, {})
             }
         }
+    }
+
+    /** D2: check the finished episode right away, off the SDK's thread. */
+    private fun checkLater(dir: File) {
+        Thread {
+            val r = EpisodeCheck.run(dir)
+            Speaker.say(if (r.ok) "Episode OK" else "Episode check failed, see the screen")
+            onEpisodeChecked?.invoke(dir, r)
+        }.start()
     }
 
     @Synchronized
