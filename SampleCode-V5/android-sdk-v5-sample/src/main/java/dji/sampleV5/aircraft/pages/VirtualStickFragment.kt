@@ -10,6 +10,8 @@ import dji.sampleV5.aircraft.keyvalue.KeyValueDialogUtil
 import dji.sampleV5.aircraft.models.BasicAircraftControlVM
 import dji.sampleV5.aircraft.models.SimulatorVM
 import dji.sampleV5.aircraft.models.VirtualStickVM
+import dji.sampleV5.aircraft.recorder.EpisodePlan
+import dji.sampleV5.aircraft.recorder.EpisodeUploader
 import dji.sampleV5.aircraft.util.Helper
 import dji.sampleV5.aircraft.util.ToastUtils
 import dji.sampleV5.aircraft.virtualstick.OnScreenJoystick
@@ -53,6 +55,14 @@ class VirtualStickFragment : DJIFragment() {
         initBtnClickListener()
         initStickListener()
         virtualStickVM.listenRCStick()
+        basicAircraftControlVM.listenForLandingConfirmation()
+        // Update the IP if your laptop's network address changes.
+        basicAircraftControlVM.listenForRecordingAndStartStream("rtmp://172.24.14.216:1935/live") { status ->
+            ToastUtils.showToast("[Stream] $status")
+            android.util.Log.i("LiveStreamHelper", status)
+        }
+        basicAircraftControlVM.listenForRecordingAndRecordTelemetry()
+        initEpisodePanel()
         virtualStickVM.currentSpeedLevel.observe(viewLifecycleOwner) {
             updateVirtualStickInfo()
         }
@@ -71,6 +81,72 @@ class VirtualStickFragment : DJIFragment() {
         simulatorVM.simulatorStateSb.observe(viewLifecycleOwner) {
             binding?.simulatorStateInfoTv?.text = it
         }
+        // Shows the raw JSON of the last command received (row number,
+        // pitch/roll/yaw/throttle) -- populated by stepReplay(), resetReplay(),
+        // and getCommandFromServer() in VirtualStickVM.
+        virtualStickVM.lastStepInfo.observe(viewLifecycleOwner) {
+            if (it.isNotBlank()) {
+                ToastUtils.showToast(it)
+            }
+        }
+        // Replay reached the end of the CSV (either a manual step or the
+        // automatic loop) -- land automatically instead of needing a
+        // separate manual button press.
+        virtualStickVM.replayFinished.observe(viewLifecycleOwner) { finished ->
+            if (finished) {
+                ToastUtils.showToast("Replay finished -- landing...")
+                basicAircraftControlVM.startLanding(object :
+                    CommonCallbacks.CompletionCallbackWithParam<EmptyMsg> {
+                    override fun onSuccess(t: EmptyMsg?) {
+                        ToastUtils.showToast("Landing started successfully")
+                        virtualStickVM.stopCsvLogging()
+                    }
+
+                    override fun onFailure(error: IDJIError) {
+                        ToastUtils.showToast("Landing failed: $error -- land manually!")
+                    }
+                })
+                virtualStickVM.resetReplayFinishedFlag()
+            }
+        }
+    }
+
+    // ---- recording plan: next setup on screen, SUCCESS / FAIL, upload to the PC ----
+    private fun initEpisodePanel() {
+        refreshPlanText()
+        binding?.btnSetGimbal?.setOnClickListener {
+            virtualStickVM.rotateGimbalTo(EpisodePlan.GIMBAL_PITCH_DEG)
+            ToastUtils.showToast("Camera angle ${EpisodePlan.GIMBAL_PITCH_DEG.toInt()} deg (set it BEFORE takeoff)")
+        }
+        binding?.btnEpOk?.setOnClickListener { finishEpisode(true) }
+        binding?.btnEpBad?.setOnClickListener { finishEpisode(false) }
+        // RESET only works with a long press, so it cannot be hit by accident.
+        binding?.btnEpReset?.setOnClickListener { ToastUtils.showToast("Hold RESET to start the plan over at episode 1") }
+        binding?.btnEpReset?.setOnLongClickListener {
+            EpisodePlan.reset()
+            refreshPlanText()
+            ToastUtils.showToast("Plan reset to episode 1")
+            true
+        }
+    }
+
+    private fun refreshPlanText() {
+        binding?.planTv?.text = EpisodePlan.describe()
+    }
+
+    private fun finishEpisode(ok: Boolean) {
+        if (EpisodePlan.recording) {
+            ToastUtils.showToast("Still recording - land first")
+            return
+        }
+        val dir = EpisodePlan.finish(ok)
+        if (dir == null) {
+            ToastUtils.showToast("No finished episode to mark")
+            return
+        }
+        refreshPlanText()
+        ToastUtils.showToast("${dir.name}: ${if (ok) "success" else "fail"} - uploading...")
+        EpisodeUploader.upload(dir) { msg -> mainHandler.post { ToastUtils.showToast(msg) } }
     }
 
     private fun initBtnClickListener() {
@@ -108,6 +184,7 @@ class VirtualStickFragment : DJIFragment() {
                 CommonCallbacks.CompletionCallbackWithParam<EmptyMsg> {
                 override fun onSuccess(t: EmptyMsg?) {
                     ToastUtils.showToast("start takeOff onSuccess.")
+                    virtualStickVM.startCsvLogging(requireContext())
                 }
 
                 override fun onFailure(error: IDJIError) {
@@ -120,6 +197,7 @@ class VirtualStickFragment : DJIFragment() {
                 CommonCallbacks.CompletionCallbackWithParam<EmptyMsg> {
                 override fun onSuccess(t: EmptyMsg?) {
                     ToastUtils.showToast("start landing onSuccess.")
+                    virtualStickVM.stopCsvLogging()
                 }
 
                 override fun onFailure(error: IDJIError) {
@@ -161,6 +239,68 @@ class VirtualStickFragment : DJIFragment() {
         }
         binding?.btnDisableVirtualStickAdvancedMode?.setOnClickListener {
             virtualStickVM.disableVirtualStickAdvancedMode()
+        }
+        binding?.btnExecuteCommand?.setOnClickListener {
+            val command = binding?.commandInput?.text.toString().trim().lowercase()
+
+            when (command) {
+                "replay" -> {
+                    // Sends exactly ONE CSV row per click. Click again to
+                    // advance to the next row. Type "reset" first to start
+                    // from row 0.
+                    virtualStickVM.stepReplay()
+                }
+                "reset" -> {
+                    // Resets the server's row position back to 0, without
+                    // moving the aircraft. Useful for manual step-through
+                    // debugging via "replay". Not needed before "autoplay"
+                    // -- that command takes off and resets on its own.
+                    virtualStickVM.resetReplay()
+                }
+                "autoplay" -> {
+                    // One command does the whole thing: takes off, waits to
+                    // stabilize, replays the entire CSV automatically
+                    // (100ms/row), and lands automatically once the CSV
+                    // ends. No other command needed before or after this.
+                    ToastUtils.showToast("Taking off...")
+                    basicAircraftControlVM.startTakeOff(object :
+                        CommonCallbacks.CompletionCallbackWithParam<EmptyMsg> {
+                        override fun onSuccess(t: EmptyMsg?) {
+                            ToastUtils.showToast("Takeoff accepted -- stabilizing...")
+                            virtualStickVM.startCsvLogging(requireContext())
+
+                            // Adjust this delay if your aircraft's takeoff
+                            // climb takes noticeably longer or shorter than
+                            // ~6 seconds to stabilize. startReplay() resets
+                            // the row position to 0 internally before it
+                            // starts polling, so no separate reset is needed.
+                            // The app also starts the recording itself right after the
+                            // takeoff has settled (so you do not switch pages), and the
+                            // replay follows 1.5 s later. Landing stops the recording.
+                            val handler = android.os.Handler(android.os.Looper.getMainLooper())
+                            handler.postDelayed({
+                                virtualStickVM.startRecording()
+                                handler.postDelayed({
+                                    virtualStickVM.startReplay()
+                                }, 1500)
+                            }, 6000)
+                        }
+
+                        override fun onFailure(error: IDJIError) {
+                            ToastUtils.showToast("Takeoff failed: $error -- replay NOT started")
+                        }
+                    })
+                }
+                "stopreplay" -> {
+                    virtualStickVM.stopReplay()
+                }
+                "forward", "backward", "left", "right", "stop" -> {
+                    virtualStickVM.getCommandFromServer(command)
+                }
+                else -> {
+                    ToastUtils.showToast("Unknown command: $command")
+                }
+            }
         }
     }
 

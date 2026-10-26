@@ -1,5 +1,6 @@
 package dji.sampleV5.aircraft
 
+import android.os.Bundle
 import dji.v5.common.utils.GeoidManager
 import dji.v5.ux.core.communication.DefaultGlobalPreferences
 import dji.v5.ux.core.communication.GlobalPreferencesManager
@@ -16,6 +17,13 @@ import dji.v5.ux.sample.showcase.widgetlist.WidgetsActivity
  * Copyright (c) 2022, DJI All Rights Reserved.
  */
 class DJIAircraftMainActivity : DJIMainActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // Live streaming is now triggered by actual recording state --
+        // see BasicAircraftControlVM.listenForRecordingAndStartStream(),
+        // called from VirtualStickFragment's onViewCreated.
+    }
 
     override fun prepareUxActivity() {
         UxSharedPreferencesUtil.initialize(this)

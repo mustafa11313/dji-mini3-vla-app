@@ -104,6 +104,28 @@
                 app:layout_constraintEnd_toEndOf="parent"
                 app:layout_constraintStart_toStartOf="parent"
                 app:layout_constraintTop_toBottomOf="@id/btn_set_virtual_stick_advanced_param" />
+            <EditText
+            	android:id="@+id/command_input"
+		style="@style/main_fragment_btn"
+		android:hint="Command: forward"
+		android:singleLine="true"
+		app:layout_constraintEnd_toEndOf="parent"
+		app:layout_constraintStart_toStartOf="parent"
+		app:layout_constraintTop_toBottomOf="@id/btn_send_virtual_stick_advanced_param" />
+            <Button
+            	android:id="@+id/btn_execute_command"
+    		style="@style/main_fragment_btn"
+    		android:text="Execute Command"
+    		app:layout_constraintEnd_toEndOf="parent"
+    		app:layout_constraintStart_toStartOf="parent"
+    		app:layout_constraintTop_toBottomOf="@id/command_input" />
+            <Button
+    		android:id="@+id/btn_stop_command"
+    		style="@style/main_fragment_btn"
+    		android:text="STOP"
+    		app:layout_constraintEnd_toEndOf="parent"
+    		app:layout_constraintStart_toStartOf="parent"
+    		app:layout_constraintTop_toBottomOf="@id/btn_execute_command" />
         </androidx.constraintlayout.widget.ConstraintLayout>
     </androidx.core.widget.NestedScrollView>
 
@@ -128,6 +150,70 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintTop_toTopOf="parent">
     </TextView>
+
+    <LinearLayout
+        android:id="@+id/plan_panel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:background="#CC000000"
+        android:padding="4dp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/simulator_state_info_tv">
+
+        <TextView
+            android:id="@+id/plan_tv"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#FFFFFF"
+            android:textSize="11sp" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btn_set_gimbal"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:minHeight="0dp"
+                android:minWidth="0dp"
+                android:padding="4dp"
+                android:textSize="10sp"
+                android:text="CAMERA" />
+
+            <Button
+                android:id="@+id/btn_ep_ok"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:minHeight="0dp"
+                android:minWidth="0dp"
+                android:padding="4dp"
+                android:textSize="10sp"
+                android:text="SUCCESS" />
+
+            <Button
+                android:id="@+id/btn_ep_bad"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:minHeight="0dp"
+                android:minWidth="0dp"
+                android:padding="4dp"
+                android:textSize="10sp"
+                android:text="FAIL" />
+
+            <Button
+                android:id="@+id/btn_ep_reset"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:minHeight="0dp"
+                android:minWidth="0dp"
+                android:padding="4dp"
+                android:textSize="10sp"
+                android:text="RESET" />
+        </LinearLayout>
+    </LinearLayout>
 
     <dji.sampleV5.aircraft.virtualstick.OnScreenJoystick
         android:id="@+id/left_stick_view"
