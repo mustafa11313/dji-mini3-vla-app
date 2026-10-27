@@ -78,10 +78,8 @@ class VirtualStickVM : DJIViewModel() {
     private var flightSpeed: DJIKey<Velocity3D> =
         FlightControllerKey.KeyAircraftVelocity.create()
 
-    // Change this to match your server's current LAN IP (check with
-    // `hostname -I` on the machine running replay.py -- it can change
-    // between sessions).
-    private val SERVER_BASE_URL = "http://172.24.14.216:5000"
+    // The PC's address is set in the app ("pc <ip>"), see vla/LabSettings.kt.
+    private val SERVER_BASE_URL get() = dji.sampleV5.aircraft.vla.LabSettings.httpBase
 
     init {
         currentSpeedLevel.value = VirtualStickManager.getInstance().speedLevel

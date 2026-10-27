@@ -26,7 +26,7 @@ object EpisodePlan {
     const val GIMBAL_PITCH_DEG = -50.0          // camera angle, set before takeoff
     const val SPEED_MODE = "Normal"             // Normal / Cine / Sport, whatever you fly in
     const val START_HEADING = "north"           // direction the drone nose points at the start
-    const val SERVER_BASE_URL = "http://172.24.14.216:5000"   // same address as in VirtualStickVM
+    val SERVER_BASE_URL get() = dji.sampleV5.aircraft.vla.LabSettings.httpBase   // set in the app: "pc <ip>"
     // -----------------------------------------------------------------------
 
     /** Number of episodes in the current round (the first N setups of the plan). */

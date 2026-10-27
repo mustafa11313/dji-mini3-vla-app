@@ -1,9 +1,14 @@
 package dji.sampleV5.aircraft.pages
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.graphics.Color
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.activityViewModels
 import dji.sampleV5.aircraft.databinding.FragVirtualStickPageBinding
 import dji.sampleV5.aircraft.keyvalue.KeyValueDialogUtil
@@ -12,8 +17,14 @@ import dji.sampleV5.aircraft.models.SimulatorVM
 import dji.sampleV5.aircraft.models.VirtualStickVM
 import dji.sampleV5.aircraft.recorder.EpisodePlan
 import dji.sampleV5.aircraft.recorder.EpisodeUploader
+import dji.sampleV5.aircraft.recorder.RecordingController
 import dji.sampleV5.aircraft.util.Helper
 import dji.sampleV5.aircraft.util.ToastUtils
+import dji.sampleV5.aircraft.vla.BridgeClient
+import dji.sampleV5.aircraft.vla.LabSettings
+import dji.sampleV5.aircraft.vla.Speaker
+import dji.sampleV5.aircraft.vla.StickController
+import dji.sampleV5.aircraft.vla.VoiceCommands
 import dji.sampleV5.aircraft.virtualstick.OnScreenJoystick
 import dji.sampleV5.aircraft.virtualstick.OnScreenJoystickListener
 import dji.sdk.keyvalue.value.common.EmptyMsg
@@ -52,17 +63,19 @@ class VirtualStickFragment : DJIFragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         binding?.widgetHorizontalSituationIndicator?.setSimpleModeEnable(false)
+        Speaker.init(requireContext())
         initBtnClickListener()
         initStickListener()
         virtualStickVM.listenRCStick()
         basicAircraftControlVM.listenForLandingConfirmation()
-        // Update the IP if your laptop's network address changes.
-        basicAircraftControlVM.listenForRecordingAndStartStream("rtmp://172.24.14.216:1935/live") { status ->
+        // The PC address is set in the app: type "pc <ip>" and press Execute Command.
+        basicAircraftControlVM.listenForRecordingAndStartStream(LabSettings.rtmpUrl) { status ->
             ToastUtils.showToast("[Stream] $status")
             android.util.Log.i("LiveStreamHelper", status)
         }
         basicAircraftControlVM.listenForRecordingAndRecordTelemetry()
         initEpisodePanel()
+        initModelPanel()
         virtualStickVM.currentSpeedLevel.observe(viewLifecycleOwner) {
             updateVirtualStickInfo()
         }
@@ -111,9 +124,92 @@ class VirtualStickFragment : DJIFragment() {
         }
     }
 
+    // ---- model loop: status, MODEL FLY, STOP (see vla/StickController.kt) ----
+    private fun initModelPanel() {
+        StickController.start()
+        StickController.onStatus = { s ->
+            val link = if (s.connected) "link ok" else "no link"
+            val delay = if (s.delayMs >= 0) "${s.delayMs} ms" else "-"
+            val m = s.modelPct
+            val p = s.pilotPct
+            binding?.modelTv?.text = "Model: ${s.mode}${if (s.armed) " FLYING" else ""} | $link | delay $delay\n" +
+                    "model P ${m[0].toInt()} R ${m[1].toInt()} T ${m[2].toInt()} Y ${m[3].toInt()}\n" +
+                    "pilot P ${p[0]} R ${p[1]} T ${p[2]} Y ${p[3]}\n${s.note}"
+            binding?.modelOverlay?.update(s)
+        }
+        BridgeClient.onLog = { msg -> mainHandler.post { ToastUtils.showToast("[PC] $msg") } }
+        binding?.btnModelFly?.setOnClickListener {
+            virtualStickVM.stopReplay()      // a running replay must not fight the model
+            StickController.arm { ok, msg -> mainHandler.post { ToastUtils.showToast(if (ok) msg else "MODEL FLY refused. $msg") } }
+        }
+        binding?.btnModelStop?.setOnClickListener { stopEverything() }
+        binding?.btnStopCommand?.setOnClickListener { stopEverything() }
+        initVoice()
+    }
+
+    // ---- voice: MIC = say the mission (V1), voice STOP (V7); see vla/VoiceCommands.kt ----
+    private fun initVoice() {
+        VoiceCommands.onHeard = { text -> mainHandler.post { binding?.voiceTv?.text = "Heard: $text" } }
+        VoiceCommands.onProblem = { msg -> mainHandler.post { ToastUtils.showToast("[Voice] $msg") } }
+        VoiceCommands.onMission = { text ->
+            BridgeClient.instruction = text
+            Speaker.say("Mission: $text")
+            mainHandler.post { binding?.voiceTv?.text = "Mission: \"$text\" (type 'mission reset' for the default)" }
+        }
+        binding?.btnMic?.setOnClickListener {
+            if (!hasMic()) return@setOnClickListener
+            binding?.voiceTv?.text = "Listening... say the mission"
+            VoiceCommands.listenForMission(requireContext())
+        }
+    }
+
+    /** Microphone permission; asks for it once if missing. */
+    private fun hasMic(): Boolean {
+        if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED) return true
+        ActivityCompat.requestPermissions(requireActivity(), arrayOf(Manifest.permission.RECORD_AUDIO), 7)
+        ToastUtils.showToast("Allow the microphone, then try again")
+        return false
+    }
+
+    private fun setVoiceStop(on: Boolean) {
+        if (on && hasMic()) {
+            VoiceCommands.startStopListener(requireContext())
+            binding?.voiceTv?.text = "Voice STOP on: say \"stop\" or \"hover\""
+        } else if (!on) {
+            VoiceCommands.stopStopListener()
+            binding?.voiceTv?.text = "Voice STOP off"
+        }
+    }
+
+    /** Stops the model loop and any replay, and hovers. Works whatever is running. */
+    private fun stopEverything() {
+        StickController.emergencyStop()
+        virtualStickVM.stopFromServerCommand()
+        ToastUtils.showToast("STOP: model and replay stopped, hovering")
+    }
+
+    override fun onDestroyView() {
+        // The voice STOP listener keeps running on purpose (it does not need this screen).
+        StickController.onStatus = null
+        BridgeClient.onLog = null
+        VoiceCommands.onHeard = null
+        VoiceCommands.onProblem = null
+        VoiceCommands.onMission = null
+        RecordingController.onEpisodeChecked = null
+        super.onDestroyView()
+    }
+
     // ---- recording plan: next setup on screen, SUCCESS / FAIL, upload to the PC ----
     private fun initEpisodePanel() {
         refreshPlanText()
+        RecordingController.onEpisodeChecked = { dir, r ->
+            mainHandler.post {
+                binding?.epCheckTv?.text = "${dir.name.take(12)}: ${r.summary}"
+                binding?.epCheckTv?.setTextColor(if (r.ok) Color.rgb(102, 187, 106) else Color.rgb(239, 83, 80))
+                if (!r.ok) ToastUtils.showToast("Episode check: ${r.summary}")
+            }
+        }
         binding?.btnSetGimbal?.setOnClickListener {
             virtualStickVM.rotateGimbalTo(EpisodePlan.GIMBAL_PITCH_DEG)
             ToastUtils.showToast("Camera angle ${EpisodePlan.GIMBAL_PITCH_DEG.toInt()} deg (set it BEFORE takeoff)")
@@ -243,7 +339,32 @@ class VirtualStickFragment : DJIFragment() {
         binding?.btnExecuteCommand?.setOnClickListener {
             val command = binding?.commandInput?.text.toString().trim().lowercase()
 
+            if (command.startsWith("mission ")) {
+                val text = command.removePrefix("mission ").trim()
+                BridgeClient.instruction = if (text == "reset") null else text
+                ToastUtils.showToast(if (text == "reset") "Mission: training sentence" else "Mission: $text")
+                return@setOnClickListener
+            }
+            if (command.startsWith("pc ")) {
+                LabSettings.pcHost = command.removePrefix("pc ").trim()
+                ToastUtils.showToast("PC address set to ${LabSettings.pcHost} (restart the app for the live stream)")
+                return@setOnClickListener
+            }
             when (command) {
+                "bridge on" -> {
+                    BridgeClient.connect()
+                    setVoiceStop(true)          // voice STOP comes with the model loop
+                    ToastUtils.showToast("Connecting to the PC brain at ${LabSettings.bridgeUrl}")
+                }
+                "bridge off" -> {
+                    BridgeClient.disconnect()
+                    setVoiceStop(false)
+                    ToastUtils.showToast("PC brain disconnected")
+                }
+                "listen on" -> setVoiceStop(true)
+                "listen off" -> setVoiceStop(false)
+                "voice on" -> { Speaker.enabled = true; ToastUtils.showToast("Spoken status on") }
+                "voice off" -> { Speaker.enabled = false; ToastUtils.showToast("Spoken status off") }
                 "replay" -> {
                     // Sends exactly ONE CSV row per click. Click again to
                     // advance to the next row. Type "reset" first to start
@@ -294,7 +415,8 @@ class VirtualStickFragment : DJIFragment() {
                 "stopreplay" -> {
                     virtualStickVM.stopReplay()
                 }
-                "forward", "backward", "left", "right", "stop" -> {
+                "stop" -> stopEverything()
+                "forward", "backward", "left", "right" -> {
                     virtualStickVM.getCommandFromServer(command)
                 }
                 else -> {
