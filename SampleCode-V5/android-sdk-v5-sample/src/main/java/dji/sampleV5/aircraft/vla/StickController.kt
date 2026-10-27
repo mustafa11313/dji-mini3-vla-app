@@ -50,9 +50,22 @@ object StickController {
 
     enum class Mode { OFF, SHADOW, ACTIVE }
 
+    /** What Speaker says when the model is switched off (idea V4). */
+    private val SPOKEN = mapOf(
+        "takeover" to "You have control",
+        "stop" to "Stopped. You have control",   // not "stop": the voice listener would hear it
+        "watchdog_handback" to "Link lost, you have control",
+        "mode_change" to "PC left active mode, you have control",
+        "auto_landing" to "Auto landing"
+    )
+
     class Status(
         val mode: Mode, val armed: Boolean, val connected: Boolean,
-        val delayMs: Long, val modelPct: DoubleArray, val pilotPct: IntArray, val note: String
+        val delayMs: Long, val modelPct: DoubleArray, val pilotPct: IntArray, val note: String,
+        /** Model's spread per stick in stick percent (small = sure), null if the model gives none. */
+        val spreadPct: DoubleArray? = null,
+        /** The PC hovered instead of obeying because the model was unsure (bridge --max-spread). */
+        val unsure: Boolean = false
     )
 
     @Volatile var mode = Mode.OFF; private set
@@ -65,6 +78,8 @@ object StickController {
     private var lastDelay = -1L
     private var note = "model off"
     private var landingStarted = false
+    private var spread: DoubleArray? = null
+    private var unsure = false
 
     /** Status for the screen; called on the main thread. */
     @Volatile var onStatus: ((Status) -> Unit)? = null
@@ -103,12 +118,16 @@ object StickController {
     }
 
     /** From the PC: {"type":"cmd", ...}. tMs = phone clock of the frame this command answers. */
-    fun onCommand(sticksPct: DoubleArray, modeName: String, tMs: Long) {
+    fun onCommand(sticksPct: DoubleArray, modeName: String, tMs: Long,
+                  spreadPct: DoubleArray? = null, unsureFlag: Boolean = false) {
         main.post {
             setMode(modeName)
             val delay = SystemClock.elapsedRealtime() - tMs
             lastDelay = delay
             if (sticksPct.size != 4 || delay > STALE_MS) { publish(); return@post }
+            spread = spreadPct?.takeIf { it.size == 4 }
+            unsure = unsureFlag
+            if (armed && unsure) Speaker.say("Not sure, hovering")
             target = clamp(sticksPct)
             lastCmdAt = SystemClock.elapsedRealtime()
             if (armed && !landingStarted && LiveTelemetry.heightM < landHeightM && target[2] < 0) {
@@ -136,6 +155,7 @@ object StickController {
                         landingStarted = false
                         armed = true
                         note = "MODEL FLYING"
+                        Speaker.say("Model flying", urgent = true)
                         onEvent?.invoke("armed", "")
                         publish()
                         onResult(true, "Model flying. Move any stick to take over.")
@@ -165,7 +185,11 @@ object StickController {
         val age = SystemClock.elapsedRealtime() - lastCmdAt
         when {
             !connected || age > HANDBACK_MS -> handBack("watchdog_handback", "no commands for ${age} ms")
-            age > WATCHDOG_MS -> { send(DoubleArray(4)); note = "WATCHDOG: hovering" }
+            age > WATCHDOG_MS -> {
+                send(DoubleArray(4))
+                if (!note.startsWith("WATCHDOG")) Speaker.say("No commands, hovering", urgent = true)
+                note = "WATCHDOG: hovering"
+            }
             else -> { send(target); note = "MODEL FLYING" }
         }
     }
@@ -185,6 +209,7 @@ object StickController {
             })
         }
         note = "model off: $reason"
+        if (wasArmed) Speaker.say(SPOKEN[event] ?: "Model off, you have control", urgent = true)
         onEvent?.invoke(event, reason)
         publish()
     }
@@ -224,7 +249,8 @@ object StickController {
     }
 
     private fun publish() {
-        val s = Status(mode, armed, connected, lastDelay, target.copyOf(), LiveTelemetry.pilotPct(), note)
+        val s = Status(mode, armed, connected, lastDelay, target.copyOf(), LiveTelemetry.pilotPct(), note,
+            spread?.copyOf(), unsure)
         main.post { onStatus?.invoke(s) }
     }
 

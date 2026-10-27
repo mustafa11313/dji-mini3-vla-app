@@ -56,6 +56,16 @@ object BridgeClient {
 
     @Volatile var onLog: ((String) -> Unit)? = null
 
+    /**
+     * The mission in words (idea V1). null = the PC uses the training sentence. Sent once as
+     * {"type":"instruction"} and again in every frame header, so a reconnect cannot lose it.
+     */
+    @Volatile var instruction: String? = null
+        set(value) {
+            field = value
+            socket?.send(JSONObject().put("type", "instruction").put("text", value ?: JSONObject.NULL).toString())
+        }
+
     @Synchronized
     fun connect() {
         if (running) return
@@ -116,7 +126,9 @@ object BridgeClient {
                             m.optString("mode", "shadow"), doubles(m.optJSONArray("limits_pct")),
                             if (m.has("land_height_m")) m.getDouble("land_height_m") else null)
                         "cmd" -> doubles(m.optJSONArray("sticks"))?.let {
-                            StickController.onCommand(it, m.optString("mode", "shadow"), m.optLong("t_ms"))
+                            StickController.onCommand(it, m.optString("mode", "shadow"), m.optLong("t_ms"),
+                                doubles(m.optJSONObject("confidence")?.optJSONArray("spread_pct")),
+                                m.optBoolean("unsure", false))
                         }
                     }
                 } catch (e: Exception) {
@@ -153,6 +165,7 @@ object BridgeClient {
             val v = LiveTelemetry.velocity
             val header = JSONObject()
                 .put("type", "frame").put("seq", ++seq).put("t_ms", atMs)
+                .put("instruction", instruction ?: JSONObject.NULL)
                 .put("telemetry", JSONObject()
                     .put("height_m", LiveTelemetry.heightM)
                     .put("vx", v?.x ?: 0.0).put("vy", v?.y ?: 0.0).put("vz", v?.z ?: 0.0)
