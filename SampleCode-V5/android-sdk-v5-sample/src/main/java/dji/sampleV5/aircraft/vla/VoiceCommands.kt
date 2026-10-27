@@ -21,6 +21,13 @@ import android.speech.SpeechRecognizer
  *  - Say the mission (V1): MIC button, then speak, e.g. "land on the red pad". The words go
  *    to the PC with every frame (BridgeClient.instruction) and are spoken back.
  *
+ *  - Arabic (V8): type "lang ar" (and "lang en" to go back). The recognizer then listens in
+ *    Arabic; the mission goes to the PC as heard and the PC turns it into the English training
+ *    sentence (brain/language.py). Arabic stop words: قف، توقف، وقف، أوقف، ستوب. English "stop"
+ *    keeps working in both. The phone needs the Arabic speech pack for offline use
+ *    (Settings > Google > Voice / Speech recognition > offline languages).
+ *  - Why it failed (L4): after a thumbs down, WHY records one sentence as the reason.
+ *
  * Limits, honestly: between two phrases the recognizer is deaf for roughly half a second
  * while it restarts, and some phones beep at every restart. The RC pause button and the red
  * STOP button stay the primary stops; voice is the extra one for when the hands are busy.
@@ -28,7 +35,7 @@ import android.speech.SpeechRecognizer
  * this class later without touching the rest.
  */
 object VoiceCommands {
-    private val STOP_WORDS = Regex("\\b(stop|hover|halt|abort)\\b", RegexOption.IGNORE_CASE)
+    private val STOP_WORDS = Regex("\\b(stop|hover|halt|abort)\\b|قف|توقف|وقف|أوقف|اوقف|ستوب", RegexOption.IGNORE_CASE)
     private const val RESTART_MS = 250L
 
     private val main = Handler(Looper.getMainLooper())
@@ -36,6 +43,15 @@ object VoiceCommands {
     private var appContext: Context? = null
     @Volatile var stopListenerOn = false; private set
     private var missionPending = false
+    private var reasonPending: ((String) -> Unit)? = null
+
+    /** Recognizer language: "en-US" or "ar-SA" (idea V8). */
+    @Volatile var language = "en-US"
+        set(value) {
+            field = value
+            main.post { recognizer?.cancel(); recognizer?.destroy(); recognizer = null; listening = false; again() }
+        }
+    val arabic get() = language.startsWith("ar")
     private var listening = false
 
     /** Every recognised phrase (partial or final), for the screen. */
@@ -71,6 +87,17 @@ object VoiceCommands {
         }
     }
 
+    /** WHY button after a thumbs down: the next sentence is the reason (idea L4). */
+    fun listenForReason(context: Context, onReason: (String) -> Unit) {
+        main.post {
+            appContext = context.applicationContext
+            reasonPending = onReason
+            missionPending = false
+            if (listening) recognizer?.cancel()
+            listen()
+        }
+    }
+
     private fun listen() {
         val ctx = appContext ?: return
         if (!SpeechRecognizer.isRecognitionAvailable(ctx)) {
@@ -80,7 +107,7 @@ object VoiceCommands {
         val r = recognizer ?: create(ctx).also { recognizer = it }
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
@@ -107,6 +134,11 @@ object VoiceCommands {
                 if (best.isNotBlank()) onHeard?.invoke(best)
                 when {
                     all.any { STOP_WORDS.containsMatchIn(it) } -> stopHeard(best)
+                    reasonPending != null && best.isNotBlank() -> {
+                        val cb = reasonPending
+                        reasonPending = null
+                        cb?.invoke(best)
+                    }
                     missionPending && best.isNotBlank() -> {
                         missionPending = false
                         onMission?.invoke(best)
@@ -122,16 +154,23 @@ object VoiceCommands {
                         onProblem?.invoke("Microphone permission missing (allow it in the app settings)")
                         stopListenerOn = false
                         missionPending = false
+                        reasonPending = null
                         return
+                    }
+                    12, 13 -> {     // ERROR_LANGUAGE_NOT_SUPPORTED / _UNAVAILABLE (Android 12+)
+                        onProblem?.invoke("No speech pack for $language on this phone. Download it, or type 'lang en'")
+                        missionPending = false
+                        reasonPending = null
                     }
                     SpeechRecognizer.ERROR_RECOGNIZER_BUSY, SpeechRecognizer.ERROR_CLIENT -> {
                         recognizer?.destroy()     // a fresh recognizer gets out of a stuck state
                         recognizer = null
                     }
                 }
-                if (missionPending && error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                if ((missionPending || reasonPending != null) && error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
                     missionPending = false
-                    onProblem?.invoke("Heard nothing, press MIC again")
+                    reasonPending = null
+                    onProblem?.invoke("Heard nothing, press the button again")
                 }
                 again()
             }
@@ -149,11 +188,12 @@ object VoiceCommands {
     private fun stopHeard(text: String) {
         StickController.emergencyStop()
         missionPending = false
+        reasonPending = null
         onHeard?.invoke("STOP (\"$text\")")
     }
 
     private fun again() {
-        if (stopListenerOn || missionPending) main.postDelayed({ if (!listening) listen() }, RESTART_MS)
+        if (stopListenerOn || missionPending || reasonPending != null) main.postDelayed({ if (!listening) listen() }, RESTART_MS)
         else shutDown()
     }
 

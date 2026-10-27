@@ -3,10 +3,12 @@ package dji.sampleV5.aircraft.vla
 import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.graphics.YuvImage
+import android.os.Build
 import android.os.SystemClock
 import dji.sdk.keyvalue.value.common.ComponentIndexType
 import dji.v5.manager.datacenter.MediaDataCenter
 import dji.v5.manager.interfaces.ICameraStreamManager
+import dji.v5.utils.common.ContextUtil
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -55,6 +57,11 @@ object BridgeClient {
     private var bufAtMs = 0L
 
     @Volatile var onLog: ((String) -> Unit)? = null
+
+    /** The PC says the room does not look like the training data (idea X12, bridge --ood). */
+    @Volatile var unfamiliar = false; private set
+    /** Who made the last command: "model", or "servo" = the classic pad-centring controller (X7). */
+    @Volatile var source = "model"; private set
 
     /**
      * The mission in words (idea V1). null = the PC uses the training sentence. Sent once as
@@ -114,7 +121,9 @@ object BridgeClient {
             override fun onOpen(ws: WebSocket, response: Response) {
                 StickController.connected = true
                 ws.send(JSONObject().put("type", "hello").put("app", "dji-mini3-vla-app")
-                    .put("stick_mode", 2).toString())
+                    .put("stick_mode", 2).put("version", appVersion())
+                    .put("phone", "${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE}")
+                    .toString())
                 log("Connected to PC brain")
             }
 
@@ -126,6 +135,10 @@ object BridgeClient {
                             m.optString("mode", "shadow"), doubles(m.optJSONArray("limits_pct")),
                             if (m.has("land_height_m")) m.getDouble("land_height_m") else null)
                         "cmd" -> doubles(m.optJSONArray("sticks"))?.let {
+                            source = m.optString("source", "model")
+                            val nowUnfamiliar = m.optBoolean("unfamiliar", false)
+                            if (nowUnfamiliar && !unfamiliar) Speaker.say("Room looks unfamiliar")
+                            unfamiliar = nowUnfamiliar
                             StickController.onCommand(it, m.optString("mode", "shadow"), m.optLong("t_ms"),
                                 doubles(m.optJSONObject("confidence")?.optJSONArray("spread_pct")),
                                 m.optBoolean("unsure", false))
@@ -159,6 +172,7 @@ object BridgeClient {
                 if (bufLen == 0 || SystemClock.elapsedRealtime() - bufAtMs > MAX_FRAME_AGE_MS) return
                 copy = buf.copyOf(bufLen); w = bufW; h = bufH; atMs = bufAtMs
             }
+            val pad = PadFinder.find(copy, w, h)
             val jpeg = ByteArrayOutputStream(200_000).also {
                 YuvImage(copy, ImageFormat.NV21, w, h, null).compressToJpeg(Rect(0, 0, w, h), JPEG_QUALITY, it)
             }.toByteArray()
@@ -166,6 +180,8 @@ object BridgeClient {
             val header = JSONObject()
                 .put("type", "frame").put("seq", ++seq).put("t_ms", atMs)
                 .put("instruction", instruction ?: JSONObject.NULL)
+                .put("pad", JSONObject().put("visible", pad.visible).put("x", pad.x).put("y", pad.y)
+                    .put("size", pad.size))
                 .put("telemetry", JSONObject()
                     .put("height_m", LiveTelemetry.heightM)
                     .put("vx", v?.x ?: 0.0).put("vy", v?.y ?: 0.0).put("vz", v?.z ?: 0.0)
@@ -185,6 +201,16 @@ object BridgeClient {
     fun sendEvent(name: String, detail: String) {
         socket?.send(JSONObject().put("type", "event").put("name", name).put("detail", detail)
             .put("seq", seq).toString())
+    }
+
+    /** "versionName (versionCode)" of this app, for the PC's manifest.json (idea X16). */
+    @Suppress("DEPRECATION")
+    private fun appVersion(): String = try {
+        val ctx = ContextUtil.getContext()
+        val info = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
+        "${info.versionName} (${if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()})"
+    } catch (e: Exception) {
+        "unknown"
     }
 
     private fun doubles(a: JSONArray?): DoubleArray? = a?.let { DoubleArray(it.length()) { i -> it.getDouble(i) } }

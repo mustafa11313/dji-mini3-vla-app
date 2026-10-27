@@ -259,6 +259,60 @@
             android:textSize="10sp"
             android:text="Voice: press MIC and say the mission" />
 
+        <!-- After each model flight: was it on the pad? (idea L4, see VirtualStickFragment.initFeedback) -->
+        <LinearLayout
+            android:id="@+id/feedback_row"
+            android:layout_width="220dp"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/feedback_tv"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#FFE082"
+                android:textSize="10sp" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btn_fb_up"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:minHeight="0dp"
+                    android:minWidth="0dp"
+                    android:padding="4dp"
+                    android:textSize="11sp"
+                    android:backgroundTint="#388E3C"
+                    android:textColor="#FFFFFF"
+                    android:text="ON PAD 👍" />
+
+                <Button
+                    android:id="@+id/btn_fb_down"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:minHeight="0dp"
+                    android:minWidth="0dp"
+                    android:padding="4dp"
+                    android:textSize="11sp"
+                    android:text="MISSED 👎" />
+
+                <Button
+                    android:id="@+id/btn_fb_why"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:minHeight="0dp"
+                    android:minWidth="0dp"
+                    android:padding="4dp"
+                    android:textSize="11sp"
+                    android:text="WHY" />
+            </LinearLayout>
+        </LinearLayout>
+
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

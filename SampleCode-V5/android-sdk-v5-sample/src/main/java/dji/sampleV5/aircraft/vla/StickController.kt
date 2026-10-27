@@ -83,6 +83,8 @@ object StickController {
 
     /** Status for the screen; called on the main thread. */
     @Volatile var onStatus: ((Status) -> Unit)? = null
+    /** A model flight just ended (any reason): the screen offers thumbs up / down (idea L4). */
+    @Volatile var onFlightEnded: ((String) -> Unit)? = null
     /** Events for the PC log (takeover, stop, watchdog, auto_landing, ...). */
     @Volatile var onEvent: ((String, String) -> Unit)? = null
 
@@ -211,6 +213,7 @@ object StickController {
         note = "model off: $reason"
         if (wasArmed) Speaker.say(SPOKEN[event] ?: "Model off, you have control", urgent = true)
         onEvent?.invoke(event, reason)
+        if (wasArmed) main.post { onFlightEnded?.invoke(event) }
         publish()
     }
 
