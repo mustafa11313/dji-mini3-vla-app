@@ -22,6 +22,7 @@ import dji.sampleV5.aircraft.util.Helper
 import dji.sampleV5.aircraft.util.ToastUtils
 import dji.sampleV5.aircraft.vla.BridgeClient
 import dji.sampleV5.aircraft.vla.LabSettings
+import dji.sampleV5.aircraft.vla.PadFinder
 import dji.sampleV5.aircraft.vla.Speaker
 import dji.sampleV5.aircraft.vla.StickController
 import dji.sampleV5.aircraft.vla.VoiceCommands
@@ -132,9 +133,11 @@ class VirtualStickFragment : DJIFragment() {
             val delay = if (s.delayMs >= 0) "${s.delayMs} ms" else "-"
             val m = s.modelPct
             val p = s.pilotPct
+            val who = if (BridgeClient.source == "servo") " (classic controller)" else ""
+            val room = if (BridgeClient.unfamiliar) "\nROOM LOOKS UNFAMILIAR: model at half strength" else ""
             binding?.modelTv?.text = "Model: ${s.mode}${if (s.armed) " FLYING" else ""} | $link | delay $delay\n" +
-                    "model P ${m[0].toInt()} R ${m[1].toInt()} T ${m[2].toInt()} Y ${m[3].toInt()}\n" +
-                    "pilot P ${p[0]} R ${p[1]} T ${p[2]} Y ${p[3]}\n${s.note}"
+                    "model P ${m[0].toInt()} R ${m[1].toInt()} T ${m[2].toInt()} Y ${m[3].toInt()}$who\n" +
+                    "pilot P ${p[0]} R ${p[1]} T ${p[2]} Y ${p[3]}\n${PadFinder.describe()}\n${s.note}$room"
             binding?.modelOverlay?.update(s)
         }
         BridgeClient.onLog = { msg -> mainHandler.post { ToastUtils.showToast("[PC] $msg") } }
@@ -145,6 +148,37 @@ class VirtualStickFragment : DJIFragment() {
         binding?.btnModelStop?.setOnClickListener { stopEverything() }
         binding?.btnStopCommand?.setOnClickListener { stopEverything() }
         initVoice()
+        initFeedback()
+    }
+
+    // ---- after each model flight: thumbs up / down and a spoken reason (idea L4) ----
+    // Goes to the PC log as events "feedback" (up / down) and "feedback_reason", tied to the
+    // flight number; brain/failures.py groups the thumbs-down flights by cause.
+    private fun initFeedback() {
+        StickController.onFlightEnded = { how ->
+            binding?.feedbackRow?.visibility = View.VISIBLE
+            binding?.feedbackTv?.text = "Flight ended ($how). On the pad?"
+        }
+        binding?.btnFbUp?.setOnClickListener {
+            BridgeClient.sendEvent("feedback", "up")
+            binding?.feedbackRow?.visibility = View.GONE
+            ToastUtils.showToast("Saved: good flight")
+        }
+        binding?.btnFbDown?.setOnClickListener {
+            BridgeClient.sendEvent("feedback", "down")
+            binding?.feedbackTv?.text = "Saved: bad flight. WHY = say the reason"
+        }
+        binding?.btnFbWhy?.setOnClickListener {
+            if (!hasMic()) return@setOnClickListener
+            binding?.feedbackTv?.text = "Listening... why did it fail?"
+            VoiceCommands.listenForReason(requireContext()) { text ->
+                BridgeClient.sendEvent("feedback_reason", text)
+                mainHandler.post {
+                    binding?.feedbackTv?.text = "Reason saved: \"$text\""
+                    binding?.feedbackRow?.postDelayed({ binding?.feedbackRow?.visibility = View.GONE }, 3000)
+                }
+            }
+        }
     }
 
     // ---- voice: MIC = say the mission (V1), voice STOP (V7); see vla/VoiceCommands.kt ----
@@ -153,7 +187,7 @@ class VirtualStickFragment : DJIFragment() {
         VoiceCommands.onProblem = { msg -> mainHandler.post { ToastUtils.showToast("[Voice] $msg") } }
         VoiceCommands.onMission = { text ->
             BridgeClient.instruction = text
-            Speaker.say("Mission: $text")
+            Speaker.say(if (VoiceCommands.arabic) "Arabic mission received" else "Mission: $text")
             mainHandler.post { binding?.voiceTv?.text = "Mission: \"$text\" (type 'mission reset' for the default)" }
         }
         binding?.btnMic?.setOnClickListener {
@@ -192,6 +226,7 @@ class VirtualStickFragment : DJIFragment() {
     override fun onDestroyView() {
         // The voice STOP listener keeps running on purpose (it does not need this screen).
         StickController.onStatus = null
+        StickController.onFlightEnded = null
         BridgeClient.onLog = null
         VoiceCommands.onHeard = null
         VoiceCommands.onProblem = null
@@ -363,6 +398,8 @@ class VirtualStickFragment : DJIFragment() {
                 }
                 "listen on" -> setVoiceStop(true)
                 "listen off" -> setVoiceStop(false)
+                "lang ar" -> { VoiceCommands.language = "ar-SA"; ToastUtils.showToast("Voice: Arabic (stop words: قف، توقف)") }
+                "lang en" -> { VoiceCommands.language = "en-US"; ToastUtils.showToast("Voice: English") }
                 "voice on" -> { Speaker.enabled = true; ToastUtils.showToast("Spoken status on") }
                 "voice off" -> { Speaker.enabled = false; ToastUtils.showToast("Spoken status off") }
                 "replay" -> {
